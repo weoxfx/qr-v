@@ -52,22 +52,30 @@ class PaymentToneListener(
         }
         if (minBuf <= 0) return null
         val bufSize = maxOf(minBuf, SonicProtocol.SAMPLE_RATE / 2)
-        val rec = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                SonicProtocol.SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                encoding,
-                bufSize
+        val sources = if (android.os.Build.VERSION.SDK_INT >= 29) {
+            intArrayOf(
+                MediaRecorder.AudioSource.UNPROCESSED,
+                MediaRecorder.AudioSource.MIC
             )
-        } catch (_: Throwable) {
-            return null
+        } else {
+            intArrayOf(MediaRecorder.AudioSource.MIC)
         }
-        if (rec.state != AudioRecord.STATE_INITIALIZED) {
+        for (source in sources) {
+            val rec = try {
+                AudioRecord(
+                    source,
+                    SonicProtocol.SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    encoding,
+                    bufSize
+                )
+            } catch (_: Throwable) {
+                continue
+            }
+            if (rec.state == AudioRecord.STATE_INITIALIZED) return rec
             rec.release()
-            return null
         }
-        return rec
+        return null
     }
 
     private fun readLoopFloat(rec: AudioRecord) {

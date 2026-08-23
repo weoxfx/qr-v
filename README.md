@@ -27,7 +27,7 @@ effects that tank older GPUs — reads as liquid glass on any device.
 ## The signal chain
 
 Pure Kotlin, no NDK: `sonic/` holds the codec/modem — 8-frequency MFSK in
-the 16.4–18.8 kHz band at 44.1 kHz, 40 ms symbols (3 bits each), 4-symbol
+the 14.2–16.6 kHz band at 44.1 kHz, 40 ms symbols (3 bits each), 4-symbol
 sync preamble, CRC16 framing, Goertzel demodulation with preamble-edge fine
 sync, timing hypothesis search and duplicate-frame rejection. Covered by JVM
 unit tests (`app/src/test/`) including full modulate→demodulate round-trips

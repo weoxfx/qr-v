@@ -6,8 +6,8 @@ object SonicProtocol {
     const val SAMPLE_RATE = 44100
     const val VERSION = 1
 
-    const val SYNC_FREQ_HZ = 16400.0
-    const val DATA_BASE_FREQ_HZ = 16800.0
+    const val SYNC_FREQ_HZ = 14200.0
+    const val DATA_BASE_FREQ_HZ = 14600.0
     const val FREQ_STEP_HZ = 280.0
     const val TONES_PER_SYMBOL = 8
     const val BITS_PER_SYMBOL = 3

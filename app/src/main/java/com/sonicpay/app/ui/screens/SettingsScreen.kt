@@ -51,6 +51,7 @@ import com.sonicpay.app.ui.theme.TextPrimary
 import com.sonicpay.app.ui.theme.TextSecondary
 import com.sonicpay.app.ui.theme.WarnAmber
 import kotlinx.coroutines.launch
+import kotlin.math.sin
 
 @Composable
 fun SettingsScreen(onBack: () -> Unit, onRoleSwitched: () -> Unit) {
@@ -149,13 +150,22 @@ fun SettingsScreen(onBack: () -> Unit, onRoleSwitched: () -> Unit) {
             Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f)) {
                     Column {
-                        Text("Test broadcast", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                        Text("Test tones", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
                         Text(
-                            "Plays a ₹1 request — should be silent or a faint whine",
+                            "Play: a real ₹1 request · Sweep: each tone in the band",
                             style = MaterialTheme.typography.bodyMedium, color = TextSecondary
                         )
                     }
                 }
+                GlassChip(label = "Sweep") {
+                    scope.launch {
+                        try {
+                            player.play(sweepSamples())
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
                 GlassChip(label = "Play") {
                     scope.launch {
                         try {
@@ -170,7 +180,7 @@ fun SettingsScreen(onBack: () -> Unit, onRoleSwitched: () -> Unit) {
 
         Spacer(Modifier.height(28.dp))
         Text(
-            "SonicPay prototype · tones travel 16.4–18.8 kHz",
+            "SonicPay prototype · tones travel 14.2–16.6 kHz",
             style = MaterialTheme.typography.labelMedium,
             color = TextMuted
         )
@@ -219,6 +229,25 @@ private fun SectionLabel(text: String) {
         color = TextSecondary,
         modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
     )
+}
+
+private fun sweepSamples(): FloatArray {
+    val freqs = listOf(SonicProtocol.SYNC_FREQ_HZ) +
+        (0 until SonicProtocol.TONES_PER_SYMBOL).map { SonicProtocol.dataFreq(it) }
+    val segLen = (SonicProtocol.SAMPLE_RATE * 0.12).toInt()
+    val fade = SonicProtocol.SAMPLE_RATE / 200
+    val out = FloatArray(freqs.size * segLen)
+    freqs.forEachIndexed { f, freq ->
+        val base = f * segLen
+        for (i in 0 until segLen) {
+            val phase = 2.0 * Math.PI * freq * i / SonicProtocol.SAMPLE_RATE
+            var gain = 1f
+            if (i < fade) gain = i.toFloat() / fade
+            else if (i > segLen - fade) gain = (segLen - i).toFloat() / fade
+            out[base + i] = (sin(phase) * gain).toFloat()
+        }
+    }
+    return out
 }
 
 @Composable

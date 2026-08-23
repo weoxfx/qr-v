@@ -220,9 +220,9 @@ class FskDemodulator(
         private const val HOP_FINE = SonicProtocol.SYMBOL_SAMPLES / 8L
         private const val FINE_SCAN_SPAN = SonicProtocol.PREAMBLE_SYMBOLS + 2L
         private const val GUARD_FRACTION = 0.15f
-        private const val SYNC_RATIO_THRESHOLD = 300.0
-        private const val PEAK_RATIO = 3.0
-        private const val MIN_CORE_ENERGY = 1e-5 * SonicProtocol.SYMBOL_SAMPLES
+        private const val SYNC_RATIO_THRESHOLD = 150.0
+        private const val PEAK_RATIO = 2.5
+        private const val MIN_CORE_ENERGY = 1e-6 * SonicProtocol.SYMBOL_SAMPLES
         private const val MIN_WINDOW_ENERGY = 1e-5 * SonicProtocol.SYMBOL_SAMPLES
         private val HEADER_SYMBOL_COUNT = ceilDiv(16, SonicProtocol.BITS_PER_SYMBOL)
         private const val LOCK_TIMEOUT_MS = 6000L
