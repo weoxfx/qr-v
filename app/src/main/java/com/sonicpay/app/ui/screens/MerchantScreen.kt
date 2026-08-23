@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -32,6 +33,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +41,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.sonicpay.app.audio.TonePlayer
+import com.sonicpay.app.sonic.FskModulator
+import com.sonicpay.app.sonic.SonicProtocol
 import com.sonicpay.app.ui.components.GlassCard
 import com.sonicpay.app.ui.components.PulseRings
 import com.sonicpay.app.ui.theme.AccentBlue
@@ -48,6 +53,7 @@ import com.sonicpay.app.ui.theme.TextMuted
 import com.sonicpay.app.ui.theme.TextPrimary
 import com.sonicpay.app.ui.theme.TextSecondary
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private enum class BroadcastState { IDLE, SENDING, SENT }
 
@@ -56,6 +62,31 @@ fun MerchantScreen(onBack: () -> Unit) {
     var amount by remember { mutableStateOf("") }
     var payeeVpa by remember { mutableStateOf("mans@jd") }
     var state by remember { mutableStateOf(BroadcastState.IDLE) }
+    val player = remember { TonePlayer() }
+    val scope = rememberCoroutineScope()
+    val amountPaise = SonicProtocol.parseAmountToPaise(amount)
+
+    DisposableEffect(Unit) {
+        onDispose { player.stop() }
+    }
+
+    fun broadcast() {
+        val paise = amountPaise ?: return
+        val vpa = payeeVpa.trim()
+        if (vpa.isEmpty() || vpa.toByteArray(Charsets.UTF_8).size > SonicProtocol.MAX_VPA_BYTES) return
+        state = BroadcastState.SENDING
+        scope.launch {
+            try {
+                val frame = SonicProtocol.encodePayload(vpa, paise)
+                player.play(FskModulator.frameToSamples(frame))
+                state = BroadcastState.SENT
+            } catch (e: IllegalArgumentException) {
+                state = BroadcastState.IDLE
+            }
+            delay(1800)
+            if (state == BroadcastState.SENT) state = BroadcastState.IDLE
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -121,8 +152,12 @@ fun MerchantScreen(onBack: () -> Unit) {
                                 )
                             )
                         )
-                        .clickable(enabled = amount.isNotBlank() && state != BroadcastState.SENDING) {
-                            state = BroadcastState.SENDING
+                        .clickable(
+                            enabled = amountPaise != null &&
+                                payeeVpa.isNotBlank() &&
+                                state == BroadcastState.IDLE
+                        ) {
+                            broadcast()
                         },
                     contentAlignment = Alignment.Center
                 ) {
@@ -136,14 +171,14 @@ fun MerchantScreen(onBack: () -> Unit) {
             }
         }
 
-        LaunchedBroadcastEffect(state) { newState -> state = newState }
-
         Spacer(Modifier.height(28.dp))
 
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             Text(
                 text = when (state) {
-                    BroadcastState.IDLE -> "Tap to broadcast payment request"
+                    BroadcastState.IDLE ->
+                        if (amount.isNotBlank() && amountPaise == null) "Enter a valid amount (e.g. 28.00)"
+                        else "Tap to broadcast payment request"
                     BroadcastState.SENDING -> "Broadcasting near-inaudible tone…"
                     BroadcastState.SENT -> "Sent — waiting for customer to confirm"
                 },
@@ -154,16 +189,5 @@ fun MerchantScreen(onBack: () -> Unit) {
     }
 }
 
-@Composable
-private fun LaunchedBroadcastEffect(state: BroadcastState, onStateChange: (BroadcastState) -> Unit) {
-    androidx.compose.runtime.LaunchedEffect(state) {
-        if (state == BroadcastState.SENDING) {
-            delay(1400) // placeholder for real audio-encode duration
-            onStateChange(BroadcastState.SENT)
-            delay(1800)
-            onStateChange(BroadcastState.IDLE)
-        }
-    }
-}
 
 

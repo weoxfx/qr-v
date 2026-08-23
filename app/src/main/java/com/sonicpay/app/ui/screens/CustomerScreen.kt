@@ -1,5 +1,9 @@
 package com.sonicpay.app.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -34,7 +38,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,8 +48,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.sonicpay.app.audio.PaymentToneListener
+import com.sonicpay.app.sonic.SonicProtocol
 import com.sonicpay.app.ui.components.GlassCard
 import com.sonicpay.app.ui.components.PulseRings
 import com.sonicpay.app.ui.theme.AccentBlue
@@ -55,24 +63,45 @@ import com.sonicpay.app.ui.theme.TextMuted
 import com.sonicpay.app.ui.theme.TextPrimary
 import com.sonicpay.app.ui.theme.TextSecondary
 import com.sonicpay.app.ui.theme.WarnAmber
-import kotlinx.coroutines.delay
 
 private enum class ListenState { IDLE, LISTENING, RECEIVED, CONFIRMED }
 
-// Mock resolved merchant — stands in for the real audio-decoded + directory-lookup result.
 private data class IncomingRequest(val merchantName: String, val vpa: String, val amount: String)
+
+private fun displayNameForVpa(vpa: String): String =
+    vpa.substringBefore('@').replaceFirstChar { it.uppercaseChar() }
 
 @Composable
 fun CustomerScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
     var state by remember { mutableStateOf(ListenState.IDLE) }
+    var permissionDenied by remember { mutableStateOf(false) }
     var incoming by remember { mutableStateOf<IncomingRequest?>(null) }
 
-    LaunchedEffect(state) {
-        if (state == ListenState.LISTENING) {
-            delay(2200) // placeholder for real mic listen + ggwave decode latency
-            incoming = IncomingRequest("Manas General Store", "mans@jd", "28.00")
+    val listener = remember {
+        PaymentToneListener { vpa, amountPaise ->
+            incoming = IncomingRequest(
+                displayNameForVpa(vpa),
+                vpa,
+                SonicProtocol.formatAmount(amountPaise)
+            )
             state = ListenState.RECEIVED
         }
+    }
+
+    fun startListening() {
+        permissionDenied = !listener.start()
+        if (!permissionDenied) state = ListenState.LISTENING
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) startListening() else permissionDenied = true
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { listener.stop() }
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
@@ -101,7 +130,16 @@ fun CustomerScreen(onBack: () -> Unit) {
                             )
                         )
                         .clickable(enabled = state == ListenState.IDLE) {
-                            state = ListenState.LISTENING
+                            if (
+                                ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                            ) {
+                                startListening()
+                            } else {
+                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
                         },
                     contentAlignment = Alignment.Center
                 ) {
@@ -119,11 +157,12 @@ fun CustomerScreen(onBack: () -> Unit) {
 
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             Text(
-                text = when (state) {
-                    ListenState.IDLE -> "Tap to start listening for a payment"
-                    ListenState.LISTENING -> "Listening… hold your phone near the merchant"
-                    ListenState.RECEIVED -> "Payment request received"
-                    ListenState.CONFIRMED -> "Payment confirmed"
+                text = when {
+                    permissionDenied -> "Microphone permission is needed to hear the merchant's tone"
+                    state == ListenState.IDLE -> "Tap to start listening for a payment"
+                    state == ListenState.LISTENING -> "Listening… hold your phone near the merchant"
+                    state == ListenState.RECEIVED -> "Payment request received"
+                    else -> "Payment confirmed"
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary
@@ -140,8 +179,15 @@ fun CustomerScreen(onBack: () -> Unit) {
             incoming?.let { req ->
                 ConfirmCard(
                     request = req,
-                    onConfirm = { state = ListenState.CONFIRMED },
-                    onReject = { state = ListenState.IDLE; incoming = null }
+                    onConfirm = {
+                        listener.stop()
+                        state = ListenState.CONFIRMED
+                    },
+                    onReject = {
+                        listener.stop()
+                        state = ListenState.IDLE
+                        incoming = null
+                    }
                 )
             }
         }

@@ -9,12 +9,21 @@ Built with Kotlin + Jetpack Compose, dark glassmorphic design system.
 ## What's here right now
 
 - **Home** — pick Merchant or Customer role
-- **Merchant screen** — enter amount + VPA, tap to "broadcast" (animated placeholder — real ggwave audio encode comes next)
-- **Customer screen** — tap to "listen" (animated placeholder), see an incoming request, confirm before paying
+- **Merchant screen** — enter amount + VPA, tap to broadcast: the request is
+  FSK-modulated into a near-inaudible ultrasonic tone (16.4–18.8 kHz band,
+  44.1 kHz, pure-Kotlin DSP — no NDK) and played through the speaker
+- **Customer screen** — requests mic permission, captures audio with
+  `AudioRecord`, decodes the tone with a Goertzel-based demodulator
+  (preamble sync + CRC16 validation), and shows the confirm card with the
+  real decoded VPA + amount
 
-The actual audio encode/decode and BLE proximity discovery aren't wired in
-yet — this build proves out the design, navigation, and — most importantly —
-the phone-only build pipeline. Real signal processing is the next step.
+Broadcast is single-shot with manual resend; duplicate frames within ~2.5s
+are ignored on the receiving side.
+
+The codec/modem logic (`app/src/main/java/com/sonicpay/app/sonic/`) is pure
+Kotlin and covered by JVM unit tests (`./gradlew :app:testDebugUnitTest`),
+including full modulate→demodulate round-trips under noise and gain changes.
+BLE proximity discovery and a VPA resolution backend aren't wired in yet.
 
 ## Building the APK — entirely from your phone
 
@@ -42,13 +51,9 @@ You don't need Android Studio. GitHub's servers do the compiling for you.
 
 ## Next steps (in order)
 
-1. Wire in real audio encode/decode (ggwave via Kotlin/JNI, or an equivalent
-   pure-Kotlin FSK implementation)
-2. Short binary payload (merchant ID + amount) instead of a full URI, to
-   minimize transmit time
-3. Single-shot broadcast with a manual "resend" button, not looping —
-   avoids audio collisions when multiple merchants are nearby
-4. BLE proximity handshake as a faster/optional discovery layer alongside
+1. BLE proximity handshake as a faster/optional discovery layer alongside
    audio
-5. Merchant directory / VPA resolution backend, so only a short token
+2. Merchant directory / VPA resolution backend, so only a short token
    travels over the air
+3. Field-tune the modem: adaptive symbol duration, error correction
+   (e.g. Reed-Solomon), and speaker/mic profile tweaks for longer range
