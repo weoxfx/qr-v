@@ -28,10 +28,14 @@
   <textarea id="payload" rows="3">upi://pay?pa=mans@jd&am=28&cu=INR</textarea>
   <label>Speed / protocol</label>
   <select id="protocol">
-    <option value="fastest">Fastest (~16 B/s, least robust)</option>
-    <option value="fast" selected>Fast (~8 B/s, balanced)</option>
-    <option value="normal">Normal (~3 B/s, most robust)</option>
+    <option value="fastest">Fastest — audible (~16 B/s, least robust)</option>
+    <option value="fast" selected>Fast — audible (~8 B/s, balanced)</option>
+    <option value="normal">Normal — audible (~3 B/s, most robust)</option>
+    <option value="u-fastest">Fastest — near-inaudible (~16 B/s)</option>
+    <option value="u-fast">Fast — near-inaudible (~8 B/s)</option>
+    <option value="u-normal">Normal — near-inaudible (~3 B/s, most reliable ultrasound)</option>
   </select>
+  <small>"Near-inaudible" uses ~19-20kHz tones. Most adults won't consciously notice it, but phone speakers/mics are weaker up there, so expect shorter range and more retries than audible mode.</small>
   <button id="send" disabled>Loading library…</button>
 </div>
 
@@ -79,9 +83,14 @@ ggwave_factory().then((mod) => {
 
 function protocolId() {
   const v = $("protocol").value;
-  if (v === "fastest") return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_FASTEST;
-  if (v === "normal") return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_NORMAL;
-  return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_FAST;
+  switch (v) {
+    case "fastest": return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_FASTEST;
+    case "normal": return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_NORMAL;
+    case "u-fastest": return ggwave.ProtocolId.GGWAVE_PROTOCOL_ULTRASOUND_FASTEST;
+    case "u-fast": return ggwave.ProtocolId.GGWAVE_PROTOCOL_ULTRASOUND_FAST;
+    case "u-normal": return ggwave.ProtocolId.GGWAVE_PROTOCOL_ULTRASOUND_NORMAL;
+    default: return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_FAST;
+  }
 }
 
 $("send").onclick = async () => {
