@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import com.sonicpay.app.ui.theme.GlassBorder
 import com.sonicpay.app.ui.theme.GlassFillBottom
 import com.sonicpay.app.ui.theme.GlassFillTop
+import com.sonicpay.app.ui.theme.GlassHighlight
 
 /**
  * Layered glass panel: vertical translucent fill, hairline border that is

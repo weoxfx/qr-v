@@ -49,6 +49,7 @@ import com.sonicpay.app.ui.components.GlassChip
 import com.sonicpay.app.ui.components.PulseRings
 import com.sonicpay.app.ui.components.SonicOrb
 import com.sonicpay.app.ui.components.OrbState
+import com.sonicpay.app.ui.components.TopBar
 import com.sonicpay.app.ui.theme.AccentMint
 import com.sonicpay.app.ui.theme.TextMuted
 import com.sonicpay.app.ui.theme.TextPrimary
