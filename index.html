@@ -19,13 +19,18 @@
 </head>
 <body>
 <div id="version">build: loading…</div>
-<h1>🔊 SonicPay Lab v2</h1>
+<h1>🔊 SonicPay Lab v3</h1>
 <p>Phone-to-phone text transfer using sound — now powered by <b>ggwave</b> (real multi-tone FSK + error correction). <b>Prototype only.</b></p>
 <p><small>⚠️ Must be served over <b>https://</b> (or localhost) for microphone access.</small></p>
 
 <div class="card">
   <h2>📤 SEND</h2>
-  <textarea id="payload" rows="3">upi://pay?pa=mans@jd&am=28&cu=INR</textarea>
+  <label>Payee VPA (pre-configured on this device — NOT sent over audio)</label>
+  <input id="payeeVpa" value="mans@jd">
+  <label>Currency (pre-configured — NOT sent over audio)</label>
+  <input id="currency" value="INR">
+  <label>Amount to charge (this is the only thing transmitted over audio)</label>
+  <input id="payload" value="28.00">
   <label>Speed / protocol</label>
   <select id="protocol">
     <option value="fastest">Fastest — audible (~16 B/s, least robust)</option>
@@ -41,15 +46,19 @@
 
 <div class="card">
   <h2>📥 RECEIVE</h2>
+  <label>Expected payee VPA (pre-configured on this device)</label>
+  <input id="rxPayeeVpa" value="mans@jd">
+  <label>Expected currency (pre-configured)</label>
+  <input id="rxCurrency" value="INR">
   <button id="receive" disabled>Loading library…</button>
   <button id="stop" disabled>Stop microphone</button>
   <div id="status">Microphone is off.</div>
-  <textarea id="result" rows="3" placeholder="Decoded payload will appear here..." readonly></textarea>
+  <textarea id="result" rows="3" placeholder="Reconstructed UPI URI will appear here..." readonly></textarea>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/ggwave/ggwave.js"></script>
 <script>
-const BUILD = "v2.0-ggwave-" + new Date().toISOString().slice(0,16).replace("T"," ");
+const BUILD = "v3.0-amount-only-" + new Date().toISOString().slice(0,16).replace("T"," ");
 document.getElementById("version").textContent = "build: " + BUILD;
 console.log("[SonicPay Lab] " + BUILD);
 
@@ -95,12 +104,14 @@ function protocolId() {
 
 $("send").onclick = async () => {
   if (!window.isSecureContext) { alert("This page must be served over https:// (or localhost)."); return; }
-  const text = $("payload").value;
-  if (!text) return;
+  const amount = $("payload").value.trim();
+  if (!amount) return;
   const btn = $("send");
   btn.disabled = true;
   try {
-    const waveformI8 = ggwave.encode(instance, text, protocolId(), 25);
+    // Only the amount travels over audio — payee VPA and currency are pre-configured
+    // on both devices and never transmitted, which is what keeps the payload tiny.
+    const waveformI8 = ggwave.encode(instance, amount, protocolId(), 25);
     const floatSamples = convertTypedArray(waveformI8, Float32Array);
 
     audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
@@ -139,9 +150,12 @@ $("receive").onclick = async () => {
       try {
         const res = ggwave.decode(instance, convertTypedArray(new Float32Array(input), Int8Array));
         if (res && res.length > 0) {
-          const text = new TextDecoder("utf-8").decode(res);
-          $("result").value = text;
-          setStatus("✅ Message received successfully.");
+          const amount = new TextDecoder("utf-8").decode(res).trim();
+          const pa = $("rxPayeeVpa").value.trim();
+          const cu = $("rxCurrency").value.trim();
+          const uri = `upi://pay?pa=${encodeURIComponent(pa)}&am=${encodeURIComponent(amount)}&cu=${encodeURIComponent(cu)}`;
+          $("result").value = uri;
+          setStatus(`✅ Received amount ${amount} — reconstructed UPI URI.`);
         }
       } catch (err) {
         // decode() throws when no valid frame is present yet — expected most of the time, ignore.
