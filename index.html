@@ -3,249 +3,162 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SonicPay Lab — Audio QR Test</title>
+<title>SonicPay Lab v2</title>
 <style>
   body{font-family:system-ui,sans-serif;max-width:720px;margin:auto;padding:20px;background:#111;color:#eee}
   .card{background:#1d1d1d;border-radius:16px;padding:18px;margin:14px 0}
-  textarea,input,button{font:inherit;width:100%;box-sizing:border-box}
-  textarea,input{background:#292929;color:#fff;border:1px solid #555;border-radius:10px;padding:12px}
+  textarea,input,button,select{font:inherit;width:100%;box-sizing:border-box}
+  textarea,input,select{background:#292929;color:#fff;border:1px solid #555;border-radius:10px;padding:12px}
   button{margin-top:10px;padding:13px;border:0;border-radius:10px;background:#4f8cff;color:white;font-weight:700}
   button:disabled{opacity:.5}
-  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   #status{white-space:pre-wrap;min-height:48px}
-  .meter{height:10px;background:#333;border-radius:10px;overflow:hidden;margin-top:10px}
-  #bar{height:100%;width:0;background:#4f8cff}
   small{color:#aaa}
-  #dbg{font-size:11px;color:#777;white-space:pre-wrap;margin-top:8px}
+  #version{position:fixed;top:6px;right:10px;font-size:11px;color:#555;font-family:monospace}
+  label{font-size:13px;color:#aaa;display:block;margin-top:10px}
 </style>
 </head>
 <body>
-<h1>🔊 SonicPay Lab</h1>
-<p>Phone-to-phone text transfer using sound. <b>Prototype only</b> — do not use it to make real payments yet.</p>
-<p><small>⚠️ Must be served over <b>https://</b> (or localhost) — the microphone will not work over plain http:// on another device.</small></p>
+<div id="version">build: loading…</div>
+<h1>🔊 SonicPay Lab v2</h1>
+<p>Phone-to-phone text transfer using sound — now powered by <b>ggwave</b> (real multi-tone FSK + error correction). <b>Prototype only.</b></p>
+<p><small>⚠️ Must be served over <b>https://</b> (or localhost) for microphone access.</small></p>
 
 <div class="card">
   <h2>📤 SEND</h2>
-  <textarea id="payload" rows="4">upi://pay?pa=mans@jd&am=28&cu=INR</textarea>
-  <button id="send">Transmit with speaker</button>
-  <div class="meter"><div id="bar"></div></div>
-  <small>Slow &amp; reliable mode: audible FSK tones (1200/2400 Hz), 120ms/symbol.</small>
+  <textarea id="payload" rows="3">upi://pay?pa=mans@jd&am=28&cu=INR</textarea>
+  <label>Speed / protocol</label>
+  <select id="protocol">
+    <option value="fastest">Fastest (~16 B/s, least robust)</option>
+    <option value="fast" selected>Fast (~8 B/s, balanced)</option>
+    <option value="normal">Normal (~3 B/s, most robust)</option>
+  </select>
+  <button id="send" disabled>Loading library…</button>
 </div>
 
 <div class="card">
   <h2>📥 RECEIVE</h2>
-  <button id="receive">Start microphone</button>
+  <button id="receive" disabled>Loading library…</button>
   <button id="stop" disabled>Stop microphone</button>
   <div id="status">Microphone is off.</div>
-  <textarea id="result" rows="4" placeholder="Decoded payload will appear here..." readonly></textarea>
-  <div id="dbg"></div>
+  <textarea id="result" rows="3" placeholder="Decoded payload will appear here..." readonly></textarea>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/ggwave/ggwave.js"></script>
 <script>
-const F0 = 1200, F1 = 2400;
-const SYMBOL_MS = 150;           // slowed way down from 35ms -> much easier to detect reliably
-const FFT_SIZE = 1024;           // shorter window so it doesn't straddle 2 symbols
-const POLL_MS = 8;               // raw sampling rate, independent of symbol clock
-const ONSET_MULT = 3.5;          // tone must exceed noise floor by this factor to count as "signal present"
-const ONSET_ABS_MIN = 0.002;     // absolute floor so silence doesn't false-trigger
-const GUARD_FRAC = 0.22;         // ignore this fraction at each edge of a symbol window (transition noise)
-const PREAMBLE = [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0];
-const MAX_BYTES = 1 + 220 + 1 + 2; // header(2)+len(1)+data(<=220)+crc(1), generous cap
-
-let txCtx = null, rxCtx = null, analyser = null, source = null, rxTimer = null;
-let rxState = "idle";            // idle -> locked
-let noiseFloor = 0.0005;
-let rawSamples = [];             // {t, bit, total}
-let t0 = null;                   // ms timestamp (performance.now) of symbol 0 start
-let nextSymbolIndex = 0;
-let expectedTotalBits = PREAMBLE.length; // grows once length byte is known
-let decodedBits = [];
+const BUILD = "v2.0-ggwave-" + new Date().toISOString().slice(0,16).replace("T"," ");
+document.getElementById("version").textContent = "build: " + BUILD;
+console.log("[SonicPay Lab] " + BUILD);
 
 const $ = id => document.getElementById(id);
 const setStatus = s => $("status").textContent = s;
-const setDbg = s => $("dbg").textContent = s;
 
-function crc8(bytes){
-  let c=0;
-  for(const b of bytes){
-    c ^= b;
-    for(let i=0;i<8;i++) c = (c&0x80) ? ((c<<1)^0x07)&255 : (c<<1)&255;
-  }
-  return c;
+let ggwave = null;
+let instance = null;
+let audioCtx = null;
+let recorder = null;
+let mediaStream = null;
+
+function convertTypedArray(src, type) {
+  const buffer = new ArrayBuffer(src.byteLength);
+  new src.constructor(buffer).set(src);
+  return new type(buffer);
 }
 
-function bytesFromString(s){ return new TextEncoder().encode(s); }
-function stringFromBytes(b){ return new TextDecoder().decode(new Uint8Array(b)); }
+ggwave_factory().then((mod) => {
+  ggwave = mod;
+  const params = ggwave.getDefaultParameters();
+  instance = ggwave.init(params);
+  $("send").disabled = false;
+  $("send").textContent = "Transmit with speaker";
+  $("receive").disabled = false;
+  $("receive").textContent = "Start microphone";
+  console.log("[SonicPay Lab] ggwave ready");
+}).catch(e => {
+  setStatus("Failed to load ggwave: " + e.message);
+});
 
-function makeFrame(text){
-  const data = [...bytesFromString(text)];
-  if(data.length > 220) throw new Error("Payload too long (max 220 bytes).");
-  const frame = [0x53,0x51,data.length,...data];
-  frame.push(crc8(frame));
-  const bits = [];
-  for(const x of frame) for(let i=7;i>=0;i--) bits.push((x>>i)&1);
-  return PREAMBLE.concat(bits);
-}
-
-function tone(ctx, freq, duration, start){
-  const osc=ctx.createOscillator(), gain=ctx.createGain();
-  osc.type="sine"; osc.frequency.value=freq;
-  gain.gain.setValueAtTime(0.0001,start);
-  gain.gain.exponentialRampToValueAtTime(0.25,start+0.008);
-  gain.gain.setValueAtTime(0.25,start+duration-0.012);
-  gain.gain.exponentialRampToValueAtTime(0.0001,start+duration);
-  osc.connect(gain).connect(ctx.destination);
-  osc.start(start); osc.stop(start+duration+0.02);
+function protocolId() {
+  const v = $("protocol").value;
+  if (v === "fastest") return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_FASTEST;
+  if (v === "normal") return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_NORMAL;
+  return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_FAST;
 }
 
 $("send").onclick = async () => {
-  const btn=$("send"); btn.disabled=true;
-  try{
-    if(!window.isSecureContext) throw new Error("This page must be served over https:// (or localhost) to work reliably.");
-    const bits=makeFrame($("payload").value);
-    txCtx ||= new (window.AudioContext||window.webkitAudioContext)();
-    await txCtx.resume();
-    const gap=0.01, dur=SYMBOL_MS/1000-gap;
-    let t=txCtx.currentTime+0.15;
-    for(let i=0;i<bits.length;i++){
-      tone(txCtx,bits[i]?F1:F0,dur,t);
-      t += SYMBOL_MS/1000;
-      $("bar").style.width = ((i+1)/bits.length*100)+"%";
-    }
-    setStatus(`Transmitting ${bits.length} symbols (~${(bits.length*SYMBOL_MS/1000).toFixed(1)}s). Keep phones close and still.`);
-    setTimeout(()=>btn.disabled=false, (bits.length*SYMBOL_MS)+300);
-  }catch(e){ alert(e.message); btn.disabled=false; }
+  if (!window.isSecureContext) { alert("This page must be served over https:// (or localhost)."); return; }
+  const text = $("payload").value;
+  if (!text) return;
+  const btn = $("send");
+  btn.disabled = true;
+  try {
+    const waveformI8 = ggwave.encode(instance, text, protocolId(), 25);
+    const floatSamples = convertTypedArray(waveformI8, Float32Array);
+
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume();
+    // ggwave's internal sample rate (48000 by default) — AudioBuffer handles resampling to the device's actual rate.
+    const buffer = audioCtx.createBuffer(1, floatSamples.length, 48000);
+    buffer.copyToChannel(floatSamples, 0);
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioCtx.destination);
+    source.start();
+
+    const durationS = floatSamples.length / 48000;
+    setStatus(`Transmitting… (~${durationS.toFixed(1)}s)`);
+    setTimeout(() => { btn.disabled = false; setStatus("Done. Ready to send again."); }, durationS * 1000 + 200);
+  } catch (e) {
+    alert(e.message);
+    btn.disabled = false;
+  }
 };
 
-function goertzel(samples, freq, rate){
-  const k=Math.round(samples.length*freq/rate);
-  const w=2*Math.PI*k/samples.length, coeff=2*Math.cos(w);
-  let q0=0,q1=0,q2=0;
-  for(const x of samples){ q0=coeff*q1-q2+x; q2=q1; q1=q0; }
-  return q1*q1+q2*q2-coeff*q1*q2;
-}
+$("receive").onclick = async () => {
+  if (!window.isSecureContext) { alert("This page must be served over https:// (or localhost)."); return; }
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume();
 
-async function startRx(){
-  if(!window.isSecureContext) throw new Error("This page must be served over https:// (or localhost) for microphone access.");
-  if(!navigator.mediaDevices?.getUserMedia) throw new Error("This browser does not expose microphone access.");
-  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
-  rxCtx=new (window.AudioContext||window.webkitAudioContext)();
-  await rxCtx.resume();
-  analyser=rxCtx.createAnalyser();
-  analyser.fftSize=FFT_SIZE;
-  analyser.smoothingTimeConstant=0;
-  source=rxCtx.createMediaStreamSource(stream);
-  source.connect(analyser);
-  const buf=new Float32Array(analyser.fftSize);
-  resetDecoderOnly();
-  noiseFloor = 0.0005;
-  setStatus("🎤 Calibrating noise floor… stay quiet for a moment, then play the sender.");
-  $("receive").disabled=true; $("stop").disabled=false;
-
-  rxTimer=setInterval(()=>{
-    analyser.getFloatTimeDomainData(buf);
-    const p0=goertzel(buf,F0,rxCtx.sampleRate);
-    const p1=goertzel(buf,F1,rxCtx.sampleRate);
-    const total=p0+p1;
-    const bit = p1>p0 ? 1 : 0;
-    const now = performance.now();
-
-    if(rxState==="idle"){
-      // Track a rolling noise floor while nothing is happening.
-      noiseFloor = noiseFloor*0.98 + total*0.02;
-      setDbg(`noiseFloor=${noiseFloor.toExponential(2)} total=${total.toExponential(2)} (listening for onset)`);
-      const threshold = Math.max(noiseFloor*ONSET_MULT, ONSET_ABS_MIN);
-      if(total > threshold){
-        // Tone onset detected -> lock the symbol clock right here.
-        t0 = now;
-        nextSymbolIndex = 0;
-        expectedTotalBits = PREAMBLE.length;
-        decodedBits = [];
-        rawSamples = [];
-        rxState="locked";
-        setStatus("📡 Tone detected — locking sync…");
-      }
-      return;
-    }
-
-    // rxState === "locked": buffer raw samples, then harvest each symbol once its window has fully passed.
-    rawSamples.push({t: now, bit, total});
-    setDbg(`state=locked symbol#${nextSymbolIndex}/${expectedTotalBits} total=${total.toExponential(2)}`);
-
-    while(true){
-      const winStart = t0 + nextSymbolIndex*SYMBOL_MS;
-      const winEnd = winStart + SYMBOL_MS;
-      if(now < winEnd + 5) break; // this symbol's window hasn't fully elapsed yet
-      const guard = SYMBOL_MS*GUARD_FRAC;
-      const inWindow = rawSamples.filter(s => s.t >= winStart+guard && s.t <= winEnd-guard);
-      if(inWindow.length===0){
-        resetRx("Lost signal mid-frame — try again.");
-        return;
-      }
-      const ones = inWindow.filter(s=>s.bit===1).length;
-      const symbolBit = ones*2 >= inWindow.length ? 1 : 0;
-      decodedBits.push(symbolBit);
-      nextSymbolIndex++;
-      // Trim old samples we no longer need.
-      rawSamples = rawSamples.filter(s => s.t >= winStart);
-
-      if(decodedBits.length===PREAMBLE.length){
-        if(!PREAMBLE.every((b,i)=>b===decodedBits[i])){
-          resetRx("Sync slipped — try again (keep phones still & close).");
-          return;
+    const source = audioCtx.createMediaStreamSource(mediaStream);
+    const bufferSize = 4096;
+    recorder = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+    recorder.onaudioprocess = (e) => {
+      const input = e.inputBuffer.getChannelData(0);
+      try {
+        const res = ggwave.decode(instance, convertTypedArray(new Float32Array(input), Int8Array));
+        if (res && res.length > 0) {
+          const text = new TextDecoder("utf-8").decode(res);
+          $("result").value = text;
+          setStatus("✅ Message received successfully.");
         }
-        setStatus("📡 Signal locked — decoding…");
+      } catch (err) {
+        // decode() throws when no valid frame is present yet — expected most of the time, ignore.
       }
-      if(decodedBits.length>PREAMBLE.length){
-        const dataBitsSoFar = decodedBits.length - PREAMBLE.length;
-        if(dataBitsSoFar===24){ // header(2 bytes)+length(1 byte) known
-          const bytes = bitsToBytes(decodedBits.slice(PREAMBLE.length));
-          if(bytes[0]!==0x53 || bytes[1]!==0x51 || bytes[2]>220){
-            resetRx("Invalid frame header — try again.");
-            return;
-          }
-          expectedTotalBits = PREAMBLE.length + 8*(3+bytes[2]+1);
-        }
-        if(expectedTotalBits>PREAMBLE.length && decodedBits.length===expectedTotalBits){
-          const bytes = bitsToBytes(decodedBits.slice(PREAMBLE.length));
-          const body = bytes.slice(0,-1), got = bytes.at(-1);
-          if(crc8(body)!==got){
-            resetRx("Checksum failed — move phones closer / raise volume and retry.");
-          } else {
-            const text = stringFromBytes(bytes.slice(3,-1));
-            $("result").value=text;
-            setStatus("✅ Message received successfully.");
-            resetDecoderOnly();
-          }
-          return;
-        }
-      }
-    }
-  }, POLL_MS);
-  window._rxStream=stream;
-}
+    };
+    // Route through a silent gain node so we don't hear our own mic / cause feedback,
+    // while still keeping the audio graph "live" so onaudioprocess keeps firing.
+    const silentGain = audioCtx.createGain();
+    silentGain.gain.value = 0;
+    source.connect(recorder);
+    recorder.connect(silentGain);
+    silentGain.connect(audioCtx.destination);
 
-function bitsToBytes(bits){
-  const bytes=[];
-  for(let i=0;i+8<=bits.length;i+=8){
-    let b=0;
-    for(let j=0;j<8;j++) b=(b<<1)|bits[i+j];
-    bytes.push(b);
+    setStatus("🎤 Listening… play the sender near this phone.");
+    $("receive").disabled = true;
+    $("stop").disabled = false;
+  } catch (e) {
+    setStatus("Microphone error: " + e.message);
   }
-  return bytes;
-}
+};
 
-function resetDecoderOnly(){
-  rxState="idle"; t0=null; nextSymbolIndex=0; decodedBits=[]; rawSamples=[]; expectedTotalBits=PREAMBLE.length;
-}
-function resetRx(msg){ setStatus("⚠️ "+msg); resetDecoderOnly(); }
-
-$("receive").onclick=()=>startRx().catch(e=>setStatus("Microphone error: "+e.message));
-$("stop").onclick=()=>{
-  clearInterval(rxTimer);
-  if(window._rxStream) window._rxStream.getTracks().forEach(t=>t.stop());
-  if(rxCtx) rxCtx.close();
-  rxCtx=null; $("receive").disabled=false; $("stop").disabled=true;
+$("stop").onclick = () => {
+  if (recorder) { recorder.disconnect(); recorder.onaudioprocess = null; recorder = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  $("receive").disabled = false;
+  $("stop").disabled = true;
   setStatus("Microphone stopped.");
 };
 </script>
