@@ -43,15 +43,23 @@
 
 <script>
 const F0 = 1200, F1 = 2400;
-const SYMBOL_MS = 120;          // slowed way down from 35ms -> much easier to detect reliably
-const FFT_SIZE = 1024;          // shorter window so it doesn't straddle 2 symbols
-const RATIO_THRESHOLD = 0.5;    // loosened from 0.62 for real-world mic noise
-const CONFIRM_SAMPLES = 3;      // consecutive matching reads required before accepting a bit
+const SYMBOL_MS = 150;           // slowed way down from 35ms -> much easier to detect reliably
+const FFT_SIZE = 1024;           // shorter window so it doesn't straddle 2 symbols
+const POLL_MS = 8;               // raw sampling rate, independent of symbol clock
+const ONSET_MULT = 3.5;          // tone must exceed noise floor by this factor to count as "signal present"
+const ONSET_ABS_MIN = 0.002;     // absolute floor so silence doesn't false-trigger
+const GUARD_FRAC = 0.22;         // ignore this fraction at each edge of a symbol window (transition noise)
 const PREAMBLE = [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0];
+const MAX_BYTES = 1 + 220 + 1 + 2; // header(2)+len(1)+data(<=220)+crc(1), generous cap
 
 let txCtx = null, rxCtx = null, analyser = null, source = null, rxTimer = null;
-let rxBits = [], rxState = "search", rxByteBits = [], rxBytes = [];
-let lastTone = null, sameCount = 0;
+let rxState = "idle";            // idle -> locked
+let noiseFloor = 0.0005;
+let rawSamples = [];             // {t, bit, total}
+let t0 = null;                   // ms timestamp (performance.now) of symbol 0 start
+let nextSymbolIndex = 0;
+let expectedTotalBits = PREAMBLE.length; // grows once length byte is known
+let decodedBits = [];
 
 const $ = id => document.getElementById(id);
 const setStatus = s => $("status").textContent = s;
@@ -129,62 +137,106 @@ async function startRx(){
   source=rxCtx.createMediaStreamSource(stream);
   source.connect(analyser);
   const buf=new Float32Array(analyser.fftSize);
-  rxState="search"; rxBits=[]; rxByteBits=[]; rxBytes=[]; lastTone=null; sameCount=0;
-  setStatus("🎤 Listening… play the sender near this phone, volume up, hold still.");
+  resetDecoderOnly();
+  noiseFloor = 0.0005;
+  setStatus("🎤 Calibrating noise floor… stay quiet for a moment, then play the sender.");
   $("receive").disabled=true; $("stop").disabled=false;
 
-  // Poll roughly 3x per symbol so CONFIRM_SAMPLES worth of matching reads fits inside one symbol.
-  const pollMs = Math.max(10, Math.floor(SYMBOL_MS / (CONFIRM_SAMPLES + 2)));
   rxTimer=setInterval(()=>{
     analyser.getFloatTimeDomainData(buf);
     const p0=goertzel(buf,F0,rxCtx.sampleRate);
     const p1=goertzel(buf,F1,rxCtx.sampleRate);
-    const total=p0+p1+1e-12;
-    const ratio=Math.max(p0,p1)/total;
-    setDbg(`p0=${p0.toExponential(2)} p1=${p1.toExponential(2)} ratio=${ratio.toFixed(2)} state=${rxState}`);
-    if(ratio<RATIO_THRESHOLD) { sameCount=0; lastTone=null; return; }
-    const bit=p1>p0?1:0;
-    if(bit===lastTone) sameCount++; else {lastTone=bit;sameCount=1;}
-    if(sameCount===CONFIRM_SAMPLES){
-      consumeBit(bit);
-      sameCount=0;
-      lastTone=null; // require a fresh run of confirmations for the next symbol too
+    const total=p0+p1;
+    const bit = p1>p0 ? 1 : 0;
+    const now = performance.now();
+
+    if(rxState==="idle"){
+      // Track a rolling noise floor while nothing is happening.
+      noiseFloor = noiseFloor*0.98 + total*0.02;
+      setDbg(`noiseFloor=${noiseFloor.toExponential(2)} total=${total.toExponential(2)} (listening for onset)`);
+      const threshold = Math.max(noiseFloor*ONSET_MULT, ONSET_ABS_MIN);
+      if(total > threshold){
+        // Tone onset detected -> lock the symbol clock right here.
+        t0 = now;
+        nextSymbolIndex = 0;
+        expectedTotalBits = PREAMBLE.length;
+        decodedBits = [];
+        rawSamples = [];
+        rxState="locked";
+        setStatus("📡 Tone detected — locking sync…");
+      }
+      return;
     }
-  }, pollMs);
+
+    // rxState === "locked": buffer raw samples, then harvest each symbol once its window has fully passed.
+    rawSamples.push({t: now, bit, total});
+    setDbg(`state=locked symbol#${nextSymbolIndex}/${expectedTotalBits} total=${total.toExponential(2)}`);
+
+    while(true){
+      const winStart = t0 + nextSymbolIndex*SYMBOL_MS;
+      const winEnd = winStart + SYMBOL_MS;
+      if(now < winEnd + 5) break; // this symbol's window hasn't fully elapsed yet
+      const guard = SYMBOL_MS*GUARD_FRAC;
+      const inWindow = rawSamples.filter(s => s.t >= winStart+guard && s.t <= winEnd-guard);
+      if(inWindow.length===0){
+        resetRx("Lost signal mid-frame — try again.");
+        return;
+      }
+      const ones = inWindow.filter(s=>s.bit===1).length;
+      const symbolBit = ones*2 >= inWindow.length ? 1 : 0;
+      decodedBits.push(symbolBit);
+      nextSymbolIndex++;
+      // Trim old samples we no longer need.
+      rawSamples = rawSamples.filter(s => s.t >= winStart);
+
+      if(decodedBits.length===PREAMBLE.length){
+        if(!PREAMBLE.every((b,i)=>b===decodedBits[i])){
+          resetRx("Sync slipped — try again (keep phones still & close).");
+          return;
+        }
+        setStatus("📡 Signal locked — decoding…");
+      }
+      if(decodedBits.length>PREAMBLE.length){
+        const dataBitsSoFar = decodedBits.length - PREAMBLE.length;
+        if(dataBitsSoFar===24){ // header(2 bytes)+length(1 byte) known
+          const bytes = bitsToBytes(decodedBits.slice(PREAMBLE.length));
+          if(bytes[0]!==0x53 || bytes[1]!==0x51 || bytes[2]>220){
+            resetRx("Invalid frame header — try again.");
+            return;
+          }
+          expectedTotalBits = PREAMBLE.length + 8*(3+bytes[2]+1);
+        }
+        if(expectedTotalBits>PREAMBLE.length && decodedBits.length===expectedTotalBits){
+          const bytes = bitsToBytes(decodedBits.slice(PREAMBLE.length));
+          const body = bytes.slice(0,-1), got = bytes.at(-1);
+          if(crc8(body)!==got){
+            resetRx("Checksum failed — move phones closer / raise volume and retry.");
+          } else {
+            const text = stringFromBytes(bytes.slice(3,-1));
+            $("result").value=text;
+            setStatus("✅ Message received successfully.");
+            resetDecoderOnly();
+          }
+          return;
+        }
+      }
+    }
+  }, POLL_MS);
   window._rxStream=stream;
 }
 
-function consumeBit(bit){
-  if(rxState==="search"){
-    rxBits.push(bit);
-    if(rxBits.length>PREAMBLE.length) rxBits.shift();
-    if(rxBits.length===PREAMBLE.length && rxBits.every((b,i)=>b===PREAMBLE[i])){
-      rxState="frame"; rxByteBits=[]; rxBytes=[]; setStatus("📡 Signal locked — decoding…");
-    }
-    return;
+function bitsToBytes(bits){
+  const bytes=[];
+  for(let i=0;i+8<=bits.length;i+=8){
+    let b=0;
+    for(let j=0;j<8;j++) b=(b<<1)|bits[i+j];
+    bytes.push(b);
   }
-  rxByteBits.push(bit);
-  if(rxByteBits.length<8) return;
-  const b=rxByteBits.reduce((a,x)=>(a<<1)|x,0);
-  rxByteBits=[];
-  rxBytes.push(b);
-  if(rxBytes.length===3){
-    if(rxBytes[0]!==0x53 || rxBytes[1]!==0x51 || rxBytes[2]>220) return resetRx("Invalid frame — try again.");
-  }
-  if(rxBytes.length>=3 && rxBytes.length===3+rxBytes[2]+1){
-    const body=rxBytes.slice(0,-1), got=rxBytes.at(-1);
-    if(crc8(body)!==got) resetRx("Checksum failed — move phones closer / raise volume and retry.");
-    else{
-      const text=stringFromBytes(rxBytes.slice(3,-1));
-      $("result").value=text;
-      setStatus("✅ Message received successfully.");
-      resetDecoderOnly();
-    }
-  }
+  return bytes;
 }
 
 function resetDecoderOnly(){
-  rxState="search"; rxBits=[]; rxByteBits=[]; rxBytes=[]; lastTone=null; sameCount=0;
+  rxState="idle"; t0=null; nextSymbolIndex=0; decodedBits=[]; rawSamples=[]; expectedTotalBits=PREAMBLE.length;
 }
 function resetRx(msg){ setStatus("⚠️ "+msg); resetDecoderOnly(); }
 
