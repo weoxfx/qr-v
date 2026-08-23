@@ -66,6 +66,7 @@ import com.sonicpay.app.ui.theme.TextMuted
 import com.sonicpay.app.ui.theme.TextPrimary
 import com.sonicpay.app.ui.theme.TextSecondary
 import com.sonicpay.app.ui.theme.WarnAmber
+import kotlinx.coroutines.delay
 
 private enum class Listen { IDLE, LISTENING, RECEIVED, CONFIRMED }
 
@@ -80,6 +81,7 @@ fun CustomerScreen(onOpenSettings: () -> Unit, onOpenHistory: () -> Unit) {
     val haptics = LocalHapticFeedback.current
     var state by remember { mutableStateOf(Listen.LISTENING) }
     var permissionDenied by remember { mutableStateOf(false) }
+    var micFailed by remember { mutableStateOf(false) }
     var incoming by remember { mutableStateOf<Incoming?>(null) }
 
     val listener = remember {
@@ -94,9 +96,22 @@ fun CustomerScreen(onOpenSettings: () -> Unit, onOpenHistory: () -> Unit) {
     }
 
     fun beginListening(): Boolean {
+        permissionDenied = false
+        micFailed = false
         val started = listener.start()
-        permissionDenied = !started
+        if (!started) micFailed = true
         return started
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            state = if (beginListening()) Listen.LISTENING else Listen.IDLE
+        } else {
+            permissionDenied = true
+            state = Listen.IDLE
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -107,13 +122,16 @@ fun CustomerScreen(onOpenSettings: () -> Unit, onOpenHistory: () -> Unit) {
             state = if (beginListening()) Listen.LISTENING else Listen.IDLE
         } else {
             state = Listen.IDLE
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        state = if (granted && beginListening()) Listen.LISTENING else Listen.IDLE
+    var level by remember { mutableStateOf(0f) }
+    LaunchedEffect(state) {
+        while (state == Listen.LISTENING || state == Listen.RECEIVED) {
+            level = listener.inputLevel
+            delay(80)
+        }
     }
 
     DisposableEffect(Unit) {
@@ -164,7 +182,8 @@ fun CustomerScreen(onOpenSettings: () -> Unit, onOpenHistory: () -> Unit) {
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             Text(
                 text = when {
-                    permissionDenied -> "Microphone permission is needed to hear requests"
+                    permissionDenied -> "Allow microphone access to hear payment requests"
+                    micFailed -> "Couldn't start the microphone — close other apps using it and tap"
                     state == Listen.IDLE -> "Tap to start listening"
                     state == Listen.LISTENING -> "Listening… hold your phone near the merchant"
                     state == Listen.RECEIVED -> "Request received — confirm below"
@@ -173,6 +192,26 @@ fun CustomerScreen(onOpenSettings: () -> Unit, onOpenHistory: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary
             )
+        }
+
+        if (state == Listen.LISTENING || state == Listen.RECEIVED) {
+            Spacer(Modifier.height(14.dp))
+            Box(
+                modifier = Modifier
+                    .padding(horizontal = 48.dp)
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(CircleShape)
+                    .background(TextMuted.copy(alpha = 0.25f))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(level)
+                        .height(4.dp)
+                        .clip(CircleShape)
+                        .background(AccentMint.copy(alpha = 0.8f))
+                )
+            }
         }
 
         Spacer(Modifier.weight(1f))
