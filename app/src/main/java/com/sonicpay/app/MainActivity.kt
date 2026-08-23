@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.sonicpay.app.data.CrashReporter
 import com.sonicpay.app.data.SessionPrefs
 import com.sonicpay.app.ui.components.AnimatedBackdrop
 import com.sonicpay.app.ui.screens.CustomerScreen
@@ -28,6 +29,7 @@ import com.sonicpay.app.ui.theme.SonicPayTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashReporter.install(this)
         enableEdgeToEdge()
         SessionPrefs.init(this)
         setContent {

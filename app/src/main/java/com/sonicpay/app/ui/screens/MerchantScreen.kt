@@ -66,6 +66,7 @@ fun MerchantScreen(onSettings: () -> Unit) {
     val haptics = LocalHapticFeedback.current
     var amount by remember { mutableStateOf("") }
     var state by remember { mutableStateOf(Broadcast.IDLE) }
+    var sendFailed by remember { mutableStateOf(false) }
     var showVolumeHint by remember {
         mutableStateOf(currentMediaVolumeFraction(context) < 0.6f)
     }
@@ -88,17 +89,24 @@ fun MerchantScreen(onSettings: () -> Unit) {
         if (vpa.isEmpty() || vpa.toByteArray(Charsets.UTF_8).size > SonicProtocol.MAX_VPA_BYTES) return
         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
         showVolumeHint = currentMediaVolumeFraction(context) < 0.6f
+        sendFailed = false
         state = Broadcast.SENDING
         scope.launch {
+            var ok = false
             try {
                 val frame = SonicProtocol.encodePayload(vpa, paise)
-                player.play(FskModulator.frameToSamples(frame))
-                state = Broadcast.SENT
-            } catch (_: IllegalArgumentException) {
-                state = Broadcast.IDLE
+                ok = player.play(FskModulator.frameToSamples(frame))
+            } catch (_: Throwable) {
+                ok = false
             }
-            delay(1600)
-            if (state == Broadcast.SENT) state = Broadcast.IDLE
+            if (ok) {
+                state = Broadcast.SENT
+                delay(1600)
+                if (state == Broadcast.SENT) state = Broadcast.IDLE
+            } else {
+                state = Broadcast.IDLE
+                sendFailed = true
+            }
         }
     }
 
@@ -183,6 +191,18 @@ fun MerchantScreen(onSettings: () -> Unit) {
             }
         }
 
+        if (sendFailed && state == Broadcast.IDLE) {
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.VolumeUp, null, tint = WarnAmber, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "Couldn't play the tone — raise media volume and try again",
+                    style = MaterialTheme.typography.labelMedium, color = WarnAmber
+                )
+            }
+        }
+
         Spacer(Modifier.weight(1f))
 
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -211,8 +231,7 @@ fun MerchantScreen(onSettings: () -> Unit) {
                         else "Tap to broadcast · ~2s ultrasonic burst"
                     Broadcast.SENDING -> "Broadcasting near-inaudible tone…"
                     Broadcast.SENT -> "Sent — waiting for the customer"
-                },
-                style = MaterialTheme.typography.bodyMedium,
+                },                style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary
             )
         }

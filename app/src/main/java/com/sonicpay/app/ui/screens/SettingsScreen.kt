@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -31,10 +32,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.sonicpay.app.audio.TonePlayer
+import com.sonicpay.app.data.CrashReporter
 import com.sonicpay.app.data.SessionPrefs
 import com.sonicpay.app.sonic.FskModulator
 import com.sonicpay.app.sonic.SonicProtocol
@@ -45,11 +49,13 @@ import com.sonicpay.app.ui.theme.AccentMint
 import com.sonicpay.app.ui.theme.TextMuted
 import com.sonicpay.app.ui.theme.TextPrimary
 import com.sonicpay.app.ui.theme.TextSecondary
+import com.sonicpay.app.ui.theme.WarnAmber
 import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(onBack: () -> Unit, onRoleSwitched: () -> Unit) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val player = remember { TonePlayer() }
     var name by remember { mutableStateOf(SessionPrefs.merchantName) }
@@ -155,7 +161,7 @@ fun SettingsScreen(onBack: () -> Unit, onRoleSwitched: () -> Unit) {
                         try {
                             val frame = SonicProtocol.encodePayload("test@sonic", 100L)
                             player.play(FskModulator.frameToSamples(frame))
-                        } catch (_: IllegalArgumentException) {
+                        } catch (_: Throwable) {
                         }
                     }
                 }
@@ -169,6 +175,39 @@ fun SettingsScreen(onBack: () -> Unit, onRoleSwitched: () -> Unit) {
             color = TextMuted
         )
         Spacer(Modifier.height(16.dp))
+
+        val lastCrash = remember { CrashReporter.lastCrash(context) }
+        var crashVisible by remember { mutableStateOf(true) }
+        if (lastCrash != null && crashVisible) {
+            SectionLabel("Diagnostics")
+            GlassCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "Last crash",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = WarnAmber
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        lastCrash,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = TextSecondary,
+                        modifier = Modifier.heightIn(max = 200.dp)
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row {
+                        GlassChip(label = "Copy") {
+                            clipboard.setText(AnnotatedString(lastCrash))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        GlassChip(label = "Dismiss") {
+                            CrashReporter.clear(context)
+                            crashVisible = false
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
