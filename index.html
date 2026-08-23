@@ -16,18 +16,20 @@
   .meter{height:10px;background:#333;border-radius:10px;overflow:hidden;margin-top:10px}
   #bar{height:100%;width:0;background:#4f8cff}
   small{color:#aaa}
+  #dbg{font-size:11px;color:#777;white-space:pre-wrap;margin-top:8px}
 </style>
 </head>
 <body>
 <h1>🔊 SonicPay Lab</h1>
 <p>Phone-to-phone text transfer using sound. <b>Prototype only</b> — do not use it to make real payments yet.</p>
+<p><small>⚠️ Must be served over <b>https://</b> (or localhost) — the microphone will not work over plain http:// on another device.</small></p>
 
 <div class="card">
   <h2>📤 SEND</h2>
   <textarea id="payload" rows="4">upi://pay?pa=mans@jd&am=28&cu=INR</textarea>
   <button id="send">Transmit with speaker</button>
   <div class="meter"><div id="bar"></div></div>
-  <small>v1 uses audible FSK tones (1200/2400 Hz) so you can verify the protocol.</small>
+  <small>Slow &amp; reliable mode: audible FSK tones (1200/2400 Hz), 120ms/symbol.</small>
 </div>
 
 <div class="card">
@@ -36,20 +38,24 @@
   <button id="stop" disabled>Stop microphone</button>
   <div id="status">Microphone is off.</div>
   <textarea id="result" rows="4" placeholder="Decoded payload will appear here..." readonly></textarea>
+  <div id="dbg"></div>
 </div>
 
 <script>
 const F0 = 1200, F1 = 2400;
-const SAMPLE_RATE = 44100;
-const SYMBOL_MS = 35;
+const SYMBOL_MS = 120;          // slowed way down from 35ms -> much easier to detect reliably
+const FFT_SIZE = 1024;          // shorter window so it doesn't straddle 2 symbols
+const RATIO_THRESHOLD = 0.5;    // loosened from 0.62 for real-world mic noise
+const CONFIRM_SAMPLES = 3;      // consecutive matching reads required before accepting a bit
 const PREAMBLE = [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0];
 
 let txCtx = null, rxCtx = null, analyser = null, source = null, rxTimer = null;
 let rxBits = [], rxState = "search", rxByteBits = [], rxBytes = [];
-let lastTone = null, sameCount = 0, sampleBuf = [];
+let lastTone = null, sameCount = 0;
 
 const $ = id => document.getElementById(id);
 const setStatus = s => $("status").textContent = s;
+const setDbg = s => $("dbg").textContent = s;
 
 function crc8(bytes){
   let c=0;
@@ -77,28 +83,29 @@ function tone(ctx, freq, duration, start){
   const osc=ctx.createOscillator(), gain=ctx.createGain();
   osc.type="sine"; osc.frequency.value=freq;
   gain.gain.setValueAtTime(0.0001,start);
-  gain.gain.exponentialRampToValueAtTime(0.18,start+0.004);
-  gain.gain.setValueAtTime(0.18,start+duration-0.006);
+  gain.gain.exponentialRampToValueAtTime(0.25,start+0.008);
+  gain.gain.setValueAtTime(0.25,start+duration-0.012);
   gain.gain.exponentialRampToValueAtTime(0.0001,start+duration);
   osc.connect(gain).connect(ctx.destination);
-  osc.start(start); osc.stop(start+duration+0.01);
+  osc.start(start); osc.stop(start+duration+0.02);
 }
 
 $("send").onclick = async () => {
   const btn=$("send"); btn.disabled=true;
   try{
+    if(!window.isSecureContext) throw new Error("This page must be served over https:// (or localhost) to work reliably.");
     const bits=makeFrame($("payload").value);
     txCtx ||= new (window.AudioContext||window.webkitAudioContext)();
     await txCtx.resume();
-    const gap=0.004, dur=SYMBOL_MS/1000-gap;
-    let t=txCtx.currentTime+0.08;
+    const gap=0.01, dur=SYMBOL_MS/1000-gap;
+    let t=txCtx.currentTime+0.15;
     for(let i=0;i<bits.length;i++){
       tone(txCtx,bits[i]?F1:F0,dur,t);
       t += SYMBOL_MS/1000;
       $("bar").style.width = ((i+1)/bits.length*100)+"%";
     }
-    setStatus(`Transmitted ${bits.length} symbols.`);
-    setTimeout(()=>btn.disabled=false, (bits.length*SYMBOL_MS)+250);
+    setStatus(`Transmitting ${bits.length} symbols (~${(bits.length*SYMBOL_MS/1000).toFixed(1)}s). Keep phones close and still.`);
+    setTimeout(()=>btn.disabled=false, (bits.length*SYMBOL_MS)+300);
   }catch(e){ alert(e.message); btn.disabled=false; }
 };
 
@@ -111,34 +118,39 @@ function goertzel(samples, freq, rate){
 }
 
 async function startRx(){
+  if(!window.isSecureContext) throw new Error("This page must be served over https:// (or localhost) for microphone access.");
   if(!navigator.mediaDevices?.getUserMedia) throw new Error("This browser does not expose microphone access.");
   const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
   rxCtx=new (window.AudioContext||window.webkitAudioContext)();
   await rxCtx.resume();
   analyser=rxCtx.createAnalyser();
-  analyser.fftSize=2048;
+  analyser.fftSize=FFT_SIZE;
   analyser.smoothingTimeConstant=0;
   source=rxCtx.createMediaStreamSource(stream);
   source.connect(analyser);
   const buf=new Float32Array(analyser.fftSize);
   rxState="search"; rxBits=[]; rxByteBits=[]; rxBytes=[]; lastTone=null; sameCount=0;
-  setStatus("🎤 Listening… play the sender near this phone.");
+  setStatus("🎤 Listening… play the sender near this phone, volume up, hold still.");
   $("receive").disabled=true; $("stop").disabled=false;
 
-  // Decode using overlapping windows. We look for a stable 1200/2400 Hz tone.
+  // Poll roughly 3x per symbol so CONFIRM_SAMPLES worth of matching reads fits inside one symbol.
+  const pollMs = Math.max(10, Math.floor(SYMBOL_MS / (CONFIRM_SAMPLES + 2)));
   rxTimer=setInterval(()=>{
     analyser.getFloatTimeDomainData(buf);
     const p0=goertzel(buf,F0,rxCtx.sampleRate);
     const p1=goertzel(buf,F1,rxCtx.sampleRate);
-    const ratio=Math.max(p0,p1)/(p0+p1+1e-12);
-    if(ratio<0.62) return;
+    const total=p0+p1+1e-12;
+    const ratio=Math.max(p0,p1)/total;
+    setDbg(`p0=${p0.toExponential(2)} p1=${p1.toExponential(2)} ratio=${ratio.toFixed(2)} state=${rxState}`);
+    if(ratio<RATIO_THRESHOLD) { sameCount=0; lastTone=null; return; }
     const bit=p1>p0?1:0;
     if(bit===lastTone) sameCount++; else {lastTone=bit;sameCount=1;}
-    if(sameCount===2){
+    if(sameCount===CONFIRM_SAMPLES){
       consumeBit(bit);
       sameCount=0;
+      lastTone=null; // require a fresh run of confirmations for the next symbol too
     }
-  }, Math.max(8, SYMBOL_MS/2));
+  }, pollMs);
   window._rxStream=stream;
 }
 
@@ -157,11 +169,11 @@ function consumeBit(bit){
   rxByteBits=[];
   rxBytes.push(b);
   if(rxBytes.length===3){
-    if(rxBytes[0]!==0x53 || rxBytes[1]!==0x51 || rxBytes[2]>220) return resetRx("Invalid frame");
+    if(rxBytes[0]!==0x53 || rxBytes[1]!==0x51 || rxBytes[2]>220) return resetRx("Invalid frame — try again.");
   }
   if(rxBytes.length>=3 && rxBytes.length===3+rxBytes[2]+1){
     const body=rxBytes.slice(0,-1), got=rxBytes.at(-1);
-    if(crc8(body)!==got) resetRx("Checksum failed — try again closer.");
+    if(crc8(body)!==got) resetRx("Checksum failed — move phones closer / raise volume and retry.");
     else{
       const text=stringFromBytes(rxBytes.slice(3,-1));
       $("result").value=text;
