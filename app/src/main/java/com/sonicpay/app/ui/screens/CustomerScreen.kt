@@ -5,14 +5,13 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,21 +23,21 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Hearing
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,58 +45,74 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.sonicpay.app.audio.PaymentToneListener
+import com.sonicpay.app.data.HistoryEntry
+import com.sonicpay.app.data.SessionPrefs
 import com.sonicpay.app.sonic.SonicProtocol
 import com.sonicpay.app.ui.components.GlassCard
 import com.sonicpay.app.ui.components.PulseRings
-import com.sonicpay.app.ui.theme.AccentBlue
-import com.sonicpay.app.ui.theme.AccentViolet
-import com.sonicpay.app.ui.theme.SuccessGreen
+import com.sonicpay.app.ui.components.SonicOrb
+import com.sonicpay.app.ui.components.OrbState
+import com.sonicpay.app.ui.components.TopBar
+import com.sonicpay.app.ui.theme.AccentMint
 import com.sonicpay.app.ui.theme.TextMuted
 import com.sonicpay.app.ui.theme.TextPrimary
 import com.sonicpay.app.ui.theme.TextSecondary
 import com.sonicpay.app.ui.theme.WarnAmber
 
-private enum class ListenState { IDLE, LISTENING, RECEIVED, CONFIRMED }
+private enum class Listen { IDLE, LISTENING, RECEIVED, CONFIRMED }
 
-private data class IncomingRequest(val merchantName: String, val vpa: String, val amount: String)
+private data class Incoming(val merchantName: String, val vpa: String, val amount: String)
 
 private fun displayNameForVpa(vpa: String): String =
     vpa.substringBefore('@').replaceFirstChar { it.uppercaseChar() }
 
 @Composable
-fun CustomerScreen(onBack: () -> Unit) {
+fun CustomerScreen(onOpenSettings: () -> Unit, onOpenHistory: () -> Unit) {
     val context = LocalContext.current
-    var state by remember { mutableStateOf(ListenState.IDLE) }
+    val haptics = LocalHapticFeedback.current
+    var state by remember { mutableStateOf(Listen.LISTENING) }
     var permissionDenied by remember { mutableStateOf(false) }
-    var incoming by remember { mutableStateOf<IncomingRequest?>(null) }
+    var incoming by remember { mutableStateOf<Incoming?>(null) }
 
     val listener = remember {
         PaymentToneListener { vpa, amountPaise ->
-            incoming = IncomingRequest(
+            incoming = Incoming(
                 displayNameForVpa(vpa),
                 vpa,
                 SonicProtocol.formatAmount(amountPaise)
             )
-            state = ListenState.RECEIVED
+            state = Listen.RECEIVED
         }
     }
 
-    fun startListening() {
-        permissionDenied = !listener.start()
-        if (!permissionDenied) state = ListenState.LISTENING
+    fun beginListening(): Boolean {
+        val started = listener.start()
+        permissionDenied = !started
+        return started
+    }
+
+    LaunchedEffect(Unit) {
+        val granted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            state = if (beginListening()) Listen.LISTENING else Listen.IDLE
+        } else {
+            state = Listen.IDLE
+        }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) startListening() else permissionDenied = true
+        state = if (granted && beginListening()) Listen.LISTENING else Listen.IDLE
     }
 
     DisposableEffect(Unit) {
@@ -105,87 +120,82 @@ fun CustomerScreen(onBack: () -> Unit) {
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = TextPrimary)
-            }
-            Text("Customer", style = MaterialTheme.typography.headlineMedium, color = TextPrimary)
-        }
-
-        Spacer(Modifier.height(48.dp))
-
-        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            PulseRings(
-                color = AccentViolet,
-                active = state == ListenState.LISTENING,
-                maxRadiusDp = 130
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(120.dp)
-                        .clip(CircleShape)
-                        .background(
-                            Brush.radialGradient(
-                                listOf(AccentViolet, AccentBlue.copy(alpha = 0.6f))
-                            )
-                        )
-                        .clickable(enabled = state == ListenState.IDLE) {
-                            if (
-                                ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.RECORD_AUDIO
-                                ) == PackageManager.PERMISSION_GRANTED
-                            ) {
-                                startListening()
-                            } else {
-                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                            }
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Filled.Sensors,
-                        contentDescription = "Listen",
-                        tint = Color.White,
-                        modifier = Modifier.size(44.dp)
-                    )
+        TopBar(
+            title = "Customer",
+            actions = {
+                IconButton(onClick = onOpenHistory) {
+                    Icon(Icons.Filled.History, contentDescription = "History", tint = TextSecondary)
+                }
+                IconButton(onClick = onOpenSettings) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = TextSecondary)
                 }
             }
+        )
+
+        Spacer(Modifier.weight(0.7f))
+
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            PulseRings(color = AccentMint, active = state == Listen.LISTENING, maxRadiusDp = 130) {
+                SonicOrb(
+                    icon = Icons.Filled.Hearing,
+                    state = when {
+                        state == Listen.LISTENING || state == Listen.RECEIVED -> OrbState.ACTIVE
+                        else -> OrbState.IDLE
+                    },
+                    tint = AccentMint,
+                    enabled = state == Listen.IDLE,
+                    onClick = {
+                        val granted = ContextCompat.checkSelfPermission(
+                            context, Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (granted) {
+                            state = if (beginListening()) Listen.LISTENING else Listen.IDLE
+                        } else {
+                            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }
+                )
+            }
         }
 
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(24.dp))
 
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             Text(
                 text = when {
-                    permissionDenied -> "Microphone permission is needed to hear the merchant's tone"
-                    state == ListenState.IDLE -> "Tap to start listening for a payment"
-                    state == ListenState.LISTENING -> "Listening… hold your phone near the merchant"
-                    state == ListenState.RECEIVED -> "Payment request received"
-                    else -> "Payment confirmed"
+                    permissionDenied -> "Microphone permission is needed to hear requests"
+                    state == Listen.IDLE -> "Tap to start listening"
+                    state == Listen.LISTENING -> "Listening… hold your phone near the merchant"
+                    state == Listen.RECEIVED -> "Request received — confirm below"
+                    else -> "Paid"
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary
             )
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.weight(1f))
 
         AnimatedVisibility(
-            visible = state == ListenState.RECEIVED && incoming != null,
-            enter = fadeIn(tween(300)) + expandVertically(tween(300)),
-            exit = fadeOut(tween(200)) + shrinkVertically(tween(200))
+            visible = state == Listen.RECEIVED && incoming != null,
+            enter = fadeIn() + expandVertically(spring(dampingRatio = Spring.DampingRatioLowBouncy)),
+            exit = fadeOut() + shrinkVertically()
         ) {
             incoming?.let { req ->
                 ConfirmCard(
                     request = req,
                     onConfirm = {
                         listener.stop()
-                        state = ListenState.CONFIRMED
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        SessionPrefs.addHistory(
+                            HistoryEntry(req.vpa, SonicProtocol.parseAmountToPaise(req.amount) ?: 0L,
+                                System.currentTimeMillis(), "customer")
+                        )
+                        state = Listen.CONFIRMED
                     },
                     onReject = {
                         listener.stop()
-                        state = ListenState.IDLE
+                        state = Listen.IDLE
                         incoming = null
                     }
                 )
@@ -193,41 +203,43 @@ fun CustomerScreen(onBack: () -> Unit) {
         }
 
         AnimatedVisibility(
-            visible = state == ListenState.CONFIRMED,
-            enter = fadeIn(tween(300)),
-            exit = fadeOut(tween(200))
+            visible = state == Listen.CONFIRMED,
+            enter = fadeIn(),
+            exit = fadeOut()
         ) {
-            GlassCard(modifier = Modifier.fillMaxWidth()) {
+            GlassCard(modifier = Modifier.fillMaxWidth(), sheen = true) {
                 Row(
                     modifier = Modifier.padding(20.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(28.dp))
+                    Icon(Icons.Filled.CheckCircle, null, tint = AccentMint, modifier = Modifier.size(26.dp))
                     Spacer(Modifier.width(12.dp))
-                    Text("Paid ₹${incoming?.amount} to ${incoming?.merchantName}", color = TextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Paid ₹${incoming?.amount} to ${incoming?.merchantName}",
+                        color = TextPrimary,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
                 }
             }
         }
+
+        Spacer(Modifier.height(8.dp))
     }
 }
 
 @Composable
-private fun ConfirmCard(
-    request: IncomingRequest,
-    onConfirm: () -> Unit,
-    onReject: () -> Unit
-) {
-    GlassCard(modifier = Modifier.fillMaxWidth()) {
+private fun ConfirmCard(request: Incoming, onConfirm: () -> Unit, onReject: () -> Unit) {
+    GlassCard(modifier = Modifier.fillMaxWidth(), sheen = true) {
         Column(modifier = Modifier.padding(22.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
                         .size(44.dp)
                         .clip(CircleShape)
-                        .background(AccentBlue.copy(alpha = 0.2f)),
+                        .background(AccentMint.copy(alpha = 0.15f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Filled.Storefront, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(22.dp))
+                    Icon(Icons.Filled.Storefront, null, tint = AccentMint, modifier = Modifier.size(22.dp))
                 }
                 Spacer(Modifier.width(12.dp))
                 Column {
@@ -236,33 +248,38 @@ private fun ConfirmCard(
                 }
             }
 
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(16.dp))
             Text("Amount", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
-            Text("₹${request.amount}", style = MaterialTheme.typography.displayLarge, color = TextPrimary, fontWeight = FontWeight.Black)
+            Text(
+                "₹${request.amount}",
+                style = MaterialTheme.typography.displayLarge,
+                color = TextPrimary,
+                fontWeight = FontWeight.Black
+            )
 
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Sensors, contentDescription = null, tint = WarnAmber, modifier = Modifier.size(14.dp))
+                Icon(Icons.Filled.Hearing, null, tint = WarnAmber, modifier = Modifier.size(13.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    "Always verify this is the shop you're paying before confirming.",
+                    "Verify this is the shop you meant to pay.",
                     style = MaterialTheme.typography.labelMedium,
                     color = WarnAmber
                 )
             }
 
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(16.dp))
             Row(modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    onClick = onReject,
-                    modifier = Modifier.weight(1f)
-                ) {
+                OutlinedButton(onClick = onReject, modifier = Modifier.weight(1f)) {
                     Text("Cancel")
                 }
                 Spacer(Modifier.width(12.dp))
                 Button(
                     onClick = onConfirm,
-                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = AccentMint,
+                        contentColor = androidx.compose.ui.graphics.Color(0xFF05060A)
+                    ),
                     modifier = Modifier.weight(1f)
                 ) {
                     Text("Confirm & Pay", fontWeight = FontWeight.Bold)

@@ -8,21 +8,31 @@ Built with Kotlin + Jetpack Compose, dark glassmorphic design system.
 
 ## What's here right now
 
-- **Home** — pick Merchant or Customer role
-- **Merchant screen** — enter amount + VPA, tap to broadcast: the request is
-  FSK-modulated into a near-inaudible ultrasonic tone (16.4–18.8 kHz band,
-  44.1 kHz, pure-Kotlin DSP — no NDK) and played through the speaker
-- **Customer screen** — requests mic permission, captures audio with
-  `AudioRecord`, decodes the tone with a Goertzel-based demodulator
-  (preamble sync + CRC16 validation), and shows the confirm card with the
-  real decoded VPA + amount
+- **First launch** — pick Merchant or Customer once; the choice is saved
+  and every launch after that opens straight into your role
+- **Merchant** — amount field with quick chips (₹10/50/100/200), shop name +
+  VPA remembered from Settings, one tap fires a single-shot ultrasonic burst
+  (~1.8 s), manual resend = tap again. Warns if media volume is low.
+- **Customer** — auto-starts listening the moment the app opens (mic
+  permission asked once); decodes the request and pops the confirm card with
+  the real VPA + amount; haptic on confirm
+- **Settings** — switch role anytime, edit merchant profile, sound self-test
+- **History** — last 30 confirmed payments with amounts and timestamps
 
-Broadcast is single-shot with manual resend; duplicate frames within ~2.5s
-are ignored on the receiving side.
+Design: dark ink glassmorphism — layered translucent panels with hairline
+light edges and drifting specular sheens, spring-physics orb and pulse rings,
+single mint accent on near-black, tabular-figure typography. No blur-heavy
+effects that tank older GPUs — reads as liquid glass on any device.
 
-The codec/modem logic (`app/src/main/java/com/sonicpay/app/sonic/`) is pure
-Kotlin and covered by JVM unit tests (`./gradlew :app:testDebugUnitTest`),
-including full modulate→demodulate round-trips under noise and gain changes.
+## The signal chain
+
+Pure Kotlin, no NDK: `sonic/` holds the codec/modem — 8-frequency MFSK in
+the 16.4–18.8 kHz band at 44.1 kHz, 40 ms symbols (3 bits each), 4-symbol
+sync preamble, CRC16 framing, Goertzel demodulation with preamble-edge fine
+sync, timing hypothesis search and duplicate-frame rejection. Covered by JVM
+unit tests (`app/src/test/`) including full modulate→demodulate round-trips
+under noise and gain changes; CI runs them on every push.
+
 BLE proximity discovery and a VPA resolution backend aren't wired in yet.
 
 ## Building the APK — entirely from your phone

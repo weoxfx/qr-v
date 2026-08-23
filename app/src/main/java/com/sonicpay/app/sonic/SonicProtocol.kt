@@ -11,8 +11,8 @@ object SonicProtocol {
     const val FREQ_STEP_HZ = 280.0
     const val TONES_PER_SYMBOL = 8
     const val BITS_PER_SYMBOL = 3
-    const val SYMBOL_MS = 50
-    const val PREAMBLE_SYMBOLS = 6
+    const val SYMBOL_MS = 40
+    const val PREAMBLE_SYMBOLS = 4
 
     const val SYMBOL_SAMPLES = SAMPLE_RATE * SYMBOL_MS / 1000
     const val PREAMBLE_SAMPLES = SYMBOL_SAMPLES * PREAMBLE_SYMBOLS

@@ -4,11 +4,11 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,12 +17,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -35,72 +33,79 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.sonicpay.app.ui.components.AnimatedBackdrop
+import com.sonicpay.app.data.SessionPrefs
 import com.sonicpay.app.ui.components.GlassCard
-import com.sonicpay.app.ui.theme.AccentBlue
-import com.sonicpay.app.ui.theme.AccentViolet
+import com.sonicpay.app.ui.theme.AccentMint
 import com.sonicpay.app.ui.theme.TextMuted
 import com.sonicpay.app.ui.theme.TextPrimary
 import com.sonicpay.app.ui.theme.TextSecondary
 
 @Composable
-fun HomeScreen(
-    onMerchantSelected: () -> Unit,
-    onCustomerSelected: () -> Unit
+fun WelcomeScreen(
+    onRoleChosen: (SessionPrefs.Role) -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(64.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(
+                        listOf(AccentMint.copy(alpha = 0.35f), Color.Transparent)
+                    )
+                ),
+            contentAlignment = Alignment.Center
+        ) {
             Icon(
                 Icons.Filled.GraphicEq,
                 contentDescription = null,
-                tint = AccentBlue,
-                modifier = Modifier.size(34.dp)
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                "SonicPay",
-                style = MaterialTheme.typography.headlineLarge,
-                color = TextPrimary
+                tint = AccentMint,
+                modifier = Modifier.size(30.dp)
             )
         }
+        Spacer(Modifier.height(14.dp))
+        Text("SonicPay", style = MaterialTheme.typography.headlineLarge, color = TextPrimary)
         Spacer(Modifier.height(6.dp))
         Text(
-            "Tap to pay, at the speed of sound.",
+            "Payments at the speed of sound.",
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary
         )
-
-        Spacer(Modifier.height(48.dp))
-
-        RoleCard(
-            title = "I'm a Merchant",
-            subtitle = "Charge a customer nearby, instantly",
-            icon = Icons.Filled.Storefront,
-            accent = AccentBlue,
-            onClick = onMerchantSelected
-        )
-
-        Spacer(Modifier.height(18.dp))
-
-        RoleCard(
-            title = "I'm a Customer",
-            subtitle = "Listen for a nearby payment request",
-            icon = Icons.Filled.QrCodeScanner,
-            accent = AccentViolet,
-            onClick = onCustomerSelected
-        )
-
-        Spacer(Modifier.height(40.dp))
         Text(
-            "Prototype build · audio + proximity payments",
+            "Pick your side — you can change it later in Settings.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextMuted
+        )
+
+        Spacer(Modifier.height(44.dp))
+
+        RoleCard(
+            title = "I take payments",
+            subtitle = "Merchant · charge a customer nearby",
+            icon = Icons.Filled.Storefront,
+            onClick = { onRoleChosen(SessionPrefs.Role.Merchant) }
+        )
+        Spacer(Modifier.height(16.dp))
+        RoleCard(
+            title = "I pay",
+            subtitle = "Customer · auto-listens for requests",
+            icon = Icons.Filled.Hearing,
+            onClick = { onRoleChosen(SessionPrefs.Role.Customer) }
+        )
+
+        Spacer(Modifier.height(44.dp))
+        Text(
+            "Ultrasonic · no internet needed between phones",
             style = MaterialTheme.typography.labelMedium,
             color = TextMuted
         )
@@ -111,8 +116,7 @@ fun HomeScreen(
 private fun RoleCard(
     title: String,
     subtitle: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    accent: androidx.compose.ui.graphics.Color,
+    icon: ImageVector,
     onClick: () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -127,26 +131,29 @@ private fun RoleCard(
         modifier = Modifier
             .fillMaxWidth()
             .scale(scale)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        sheen = true
     ) {
         Row(
             modifier = Modifier.padding(22.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            androidx.compose.foundation.layout.Box(
+            Box(
                 modifier = Modifier
                     .size(52.dp)
                     .clip(CircleShape)
                     .background(
-                        Brush.linearGradient(listOf(accent.copy(alpha = 0.35f), accent.copy(alpha = 0.1f)))
+                        Brush.linearGradient(
+                            listOf(AccentMint.copy(alpha = 0.30f), AccentMint.copy(alpha = 0.08f))
+                        )
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(26.dp))
+                Icon(icon, contentDescription = null, tint = AccentMint, modifier = Modifier.size(25.dp))
             }
             Spacer(Modifier.width(16.dp))
             Column {
-                Text(title, style = MaterialTheme.typography.titleLarge, color = TextPrimary, fontWeight = FontWeight.Bold)
+                Text(title, style = MaterialTheme.typography.titleLarge, color = TextPrimary)
                 Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
             }
         }
