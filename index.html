@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SonicPay Lab v2</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:720px;margin:auto;padding:20px;background:#111;color:#eee}
+  .card{background:#1d1d1d;border-radius:16px;padding:18px;margin:14px 0}
+  textarea,input,button,select{font:inherit;width:100%;box-sizing:border-box}
+  textarea,input,select{background:#292929;color:#fff;border:1px solid #555;border-radius:10px;padding:12px}
+  button{margin-top:10px;padding:13px;border:0;border-radius:10px;background:#4f8cff;color:white;font-weight:700}
+  button:disabled{opacity:.5}
+  #status{white-space:pre-wrap;min-height:48px}
+  small{color:#aaa}
+  #version{position:fixed;top:6px;right:10px;font-size:11px;color:#555;font-family:monospace}
+  label{font-size:13px;color:#aaa;display:block;margin-top:10px}
+</style>
+</head>
+<body>
+<div id="version">build: loading…</div>
+<h1>🔊 SonicPay Lab v3</h1>
+<p>Phone-to-phone text transfer using sound — now powered by <b>ggwave</b> (real multi-tone FSK + error correction). <b>Prototype only.</b></p>
+<p><small>⚠️ Must be served over <b>https://</b> (or localhost) for microphone access.</small></p>
+
+<div class="card">
+  <h2>📤 SEND</h2>
+  <label>Payee VPA (pre-configured on this device — NOT sent over audio)</label>
+  <input id="payeeVpa" value="mans@jd">
+  <label>Currency (pre-configured — NOT sent over audio)</label>
+  <input id="currency" value="INR">
+  <label>Amount to charge (this is the only thing transmitted over audio)</label>
+  <input id="payload" value="28.00">
+  <label>Speed / protocol</label>
+  <select id="protocol">
+    <option value="fastest">Fastest — audible (~16 B/s, least robust)</option>
+    <option value="fast" selected>Fast — audible (~8 B/s, balanced)</option>
+    <option value="normal">Normal — audible (~3 B/s, most robust)</option>
+    <option value="u-fastest">Fastest — near-inaudible (~16 B/s)</option>
+    <option value="u-fast">Fast — near-inaudible (~8 B/s)</option>
+    <option value="u-normal">Normal — near-inaudible (~3 B/s, most reliable ultrasound)</option>
+  </select>
+  <small>"Near-inaudible" uses ~19-20kHz tones. Most adults won't consciously notice it, but phone speakers/mics are weaker up there, so expect shorter range and more retries than audible mode.</small>
+  <button id="send" disabled>Loading library…</button>
+</div>
+
+<div class="card">
+  <h2>📥 RECEIVE</h2>
+  <label>Expected payee VPA (pre-configured on this device)</label>
+  <input id="rxPayeeVpa" value="mans@jd">
+  <label>Expected currency (pre-configured)</label>
+  <input id="rxCurrency" value="INR">
+  <button id="receive" disabled>Loading library…</button>
+  <button id="stop" disabled>Stop microphone</button>
+  <div id="status">Microphone is off.</div>
+  <textarea id="result" rows="3" placeholder="Reconstructed UPI URI will appear here..." readonly></textarea>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/ggwave/ggwave.js"></script>
+<script>
+const BUILD = "v3.0-amount-only-" + new Date().toISOString().slice(0,16).replace("T"," ");
+document.getElementById("version").textContent = "build: " + BUILD;
+console.log("[SonicPay Lab] " + BUILD);
+
+const $ = id => document.getElementById(id);
+const setStatus = s => $("status").textContent = s;
+
+let ggwave = null;
+let instance = null;
+let audioCtx = null;
+let recorder = null;
+let mediaStream = null;
+
+function convertTypedArray(src, type) {
+  const buffer = new ArrayBuffer(src.byteLength);
+  new src.constructor(buffer).set(src);
+  return new type(buffer);
+}
+
+ggwave_factory().then((mod) => {
+  ggwave = mod;
+  const params = ggwave.getDefaultParameters();
+  instance = ggwave.init(params);
+  $("send").disabled = false;
+  $("send").textContent = "Transmit with speaker";
+  $("receive").disabled = false;
+  $("receive").textContent = "Start microphone";
+  console.log("[SonicPay Lab] ggwave ready");
+}).catch(e => {
+  setStatus("Failed to load ggwave: " + e.message);
+});
+
+function protocolId() {
+  const v = $("protocol").value;
+  switch (v) {
+    case "fastest": return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_FASTEST;
+    case "normal": return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_NORMAL;
+    case "u-fastest": return ggwave.ProtocolId.GGWAVE_PROTOCOL_ULTRASOUND_FASTEST;
+    case "u-fast": return ggwave.ProtocolId.GGWAVE_PROTOCOL_ULTRASOUND_FAST;
+    case "u-normal": return ggwave.ProtocolId.GGWAVE_PROTOCOL_ULTRASOUND_NORMAL;
+    default: return ggwave.ProtocolId.GGWAVE_PROTOCOL_AUDIBLE_FAST;
+  }
+}
+
+$("send").onclick = async () => {
+  if (!window.isSecureContext) { alert("This page must be served over https:// (or localhost)."); return; }
+  const amount = $("payload").value.trim();
+  if (!amount) return;
+  const btn = $("send");
+  btn.disabled = true;
+  try {
+    // Only the amount travels over audio — payee VPA and currency are pre-configured
+    // on both devices and never transmitted, which is what keeps the payload tiny.
+    const waveformI8 = ggwave.encode(instance, amount, protocolId(), 25);
+    const floatSamples = convertTypedArray(waveformI8, Float32Array);
+
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume();
+    // ggwave's internal sample rate (48000 by default) — AudioBuffer handles resampling to the device's actual rate.
+    const buffer = audioCtx.createBuffer(1, floatSamples.length, 48000);
+    buffer.copyToChannel(floatSamples, 0);
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioCtx.destination);
+    source.start();
+
+    const durationS = floatSamples.length / 48000;
+    setStatus(`Transmitting… (~${durationS.toFixed(1)}s)`);
+    setTimeout(() => { btn.disabled = false; setStatus("Done. Ready to send again."); }, durationS * 1000 + 200);
+  } catch (e) {
+    alert(e.message);
+    btn.disabled = false;
+  }
+};
+
+$("receive").onclick = async () => {
+  if (!window.isSecureContext) { alert("This page must be served over https:// (or localhost)."); return; }
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume();
+
+    const source = audioCtx.createMediaStreamSource(mediaStream);
+    const bufferSize = 4096;
+    recorder = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+    recorder.onaudioprocess = (e) => {
+      const input = e.inputBuffer.getChannelData(0);
+      try {
+        const res = ggwave.decode(instance, convertTypedArray(new Float32Array(input), Int8Array));
+        if (res && res.length > 0) {
+          const amount = new TextDecoder("utf-8").decode(res).trim();
+          const pa = $("rxPayeeVpa").value.trim();
+          const cu = $("rxCurrency").value.trim();
+          const uri = `upi://pay?pa=${encodeURIComponent(pa)}&am=${encodeURIComponent(amount)}&cu=${encodeURIComponent(cu)}`;
+          $("result").value = uri;
+          setStatus(`✅ Received amount ${amount} — reconstructed UPI URI.`);
+        }
+      } catch (err) {
+        // decode() throws when no valid frame is present yet — expected most of the time, ignore.
+      }
+    };
+    // Route through a silent gain node so we don't hear our own mic / cause feedback,
+    // while still keeping the audio graph "live" so onaudioprocess keeps firing.
+    const silentGain = audioCtx.createGain();
+    silentGain.gain.value = 0;
+    source.connect(recorder);
+    recorder.connect(silentGain);
+    silentGain.connect(audioCtx.destination);
+
+    setStatus("🎤 Listening… play the sender near this phone.");
+    $("receive").disabled = true;
+    $("stop").disabled = false;
+  } catch (e) {
+    setStatus("Microphone error: " + e.message);
+  }
+};
+
+$("stop").onclick = () => {
+  if (recorder) { recorder.disconnect(); recorder.onaudioprocess = null; recorder = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  $("receive").disabled = false;
+  $("stop").disabled = true;
+  setStatus("Microphone stopped.");
+};
+</script>
+</body>
+</html>
